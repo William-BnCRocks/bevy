@@ -492,7 +492,7 @@ impl AssetServer {
             (handle.clone().unwrap(), path.clone())
         };
 
-        if let Some(meta_transform) = base_handle.meta_transform() {
+        if let Some(meta_transform) = handle.clone().unwrap().meta_transform() {
             (*meta_transform)(&mut *meta);
         }
 
