@@ -1,11 +1,13 @@
 use crate::{
     meta::{AssetHash, MetaTransform},
+    server::loaders::MaybeAssetLoader,
     Asset, AssetHandleProvider, AssetLoadError, AssetPath, DependencyLoadState, ErasedLoadedAsset,
     Handle, InternalAssetEvent, LoadState, RecursiveDependencyLoadState, StrongHandle,
     UntypedAssetId, UntypedHandle,
 };
 use bevy_ecs::world::World;
 use bevy_log::warn;
+use bevy_tasks::IoTaskPool;
 use bevy_utils::{Entry, HashMap, HashSet, TypeIdMap};
 use crossbeam_channel::Sender;
 use std::{
@@ -151,12 +153,14 @@ impl AssetInfos {
         path: AssetPath<'static>,
         loading_mode: HandleLoadingMode,
         meta_transform: Option<MetaTransform>,
+        loader: Option<MaybeAssetLoader>,
     ) -> (Handle<A>, bool) {
         let result = self.get_or_create_path_handle_internal(
             path,
             Some(TypeId::of::<A>()),
             loading_mode,
             meta_transform,
+            loader,
         );
         // it is ok to unwrap because TypeId was specified above
         let (handle, should_load) =
@@ -171,12 +175,14 @@ impl AssetInfos {
         type_name: &'static str,
         loading_mode: HandleLoadingMode,
         meta_transform: Option<MetaTransform>,
+        loader: Option<MaybeAssetLoader>,
     ) -> (UntypedHandle, bool) {
         let result = self.get_or_create_path_handle_internal(
             path,
             Some(type_id),
             loading_mode,
             meta_transform,
+            loader,
         );
         // it is ok to unwrap because TypeId was specified above
         unwrap_with_context(result, type_name).unwrap()
@@ -190,6 +196,7 @@ impl AssetInfos {
         type_id: Option<TypeId>,
         loading_mode: HandleLoadingMode,
         meta_transform: Option<MetaTransform>,
+        loader: Option<MaybeAssetLoader>,
     ) -> Result<(UntypedHandle, bool), GetOrCreateHandleInternalError> {
         let handles = self.path_to_id.entry(path.clone()).or_default();
 
@@ -225,6 +232,32 @@ impl AssetInfos {
                     // If we can upgrade the handle, there is at least one live handle right now,
                     // The asset load has already kicked off (and maybe completed), so we can just
                     // return a strong handle
+
+                    // If we found a handle, we should check if the meta is different from the
+                    // current handle
+                    if !should_load {
+                        if let Some(loader) = loader {
+                            should_load = !Self::check_meta_equal(&strong_handle.meta_transform, &meta_transform, loader);
+                        }
+
+                        if should_load {
+                            info.load_state = LoadState::Loading;
+                            info.dep_load_state = DependencyLoadState::Loading;
+                            info.rec_dep_load_state = RecursiveDependencyLoadState::Loading;
+                            info.handle_drops_to_skip += 1;
+
+                            let provider = self
+                                .handle_providers
+                                .get(&type_id)
+                                .ok_or(MissingHandleProviderError(type_id))?;
+                            let handle =
+                                provider.get_handle(id.internal(), true, Some(path), meta_transform);
+                            info.weak_handle = Arc::downgrade(&handle);
+
+                            return Ok((UntypedHandle::Strong(handle), should_load));
+                        }
+                    }
+
                     Ok((UntypedHandle::Strong(strong_handle), should_load))
                 } else {
                     // Asset meta exists, but all live handles were dropped. This means the `track_assets` system
@@ -265,6 +298,37 @@ impl AssetInfos {
                 Ok((handle, should_load))
             }
         }
+    }
+
+    fn check_meta_equal(handle_meta_transform: &Option<MetaTransform>, requested_meta_transform: &Option<MetaTransform>, loader: MaybeAssetLoader) -> bool {
+        if handle_meta_transform.is_none() && requested_meta_transform.is_none() {
+            return true;
+        }
+
+         IoTaskPool::get()
+            .scope(|s| {
+                s.spawn(async move {
+                    let loader_result = loader.get().await;
+
+                    if let Ok(loader) = loader_result {
+                        if let Some(handle_meta_transform) = handle_meta_transform {
+                            if let Some(requested_meta_transform) = requested_meta_transform {
+                                let mut handle_meta = loader.default_meta();
+                                let mut requested_meta = loader.default_meta();
+
+                                (*handle_meta_transform)(&mut *handle_meta);
+                                (*requested_meta_transform)(&mut *requested_meta);
+
+                                if handle_meta.serialize() == requested_meta.serialize() {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+
+                    false
+                });
+            })[0].to_owned()
     }
 
     pub(crate) fn get(&self, id: UntypedAssetId) -> Option<&AssetInfo> {

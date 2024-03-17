@@ -291,6 +291,7 @@ impl AssetServer {
             path.clone(),
             HandleLoadingMode::Request,
             meta_transform,
+            self.data.loaders.read().get_by_type(TypeId::of::<A>()),
         );
 
         if should_load {
@@ -359,6 +360,7 @@ impl AssetServer {
                 path.clone().with_source(untyped_source),
                 HandleLoadingMode::Request,
                 None,
+                self.data.loaders.read().get_by_path(&path.clone()),
             );
         if !should_load {
             return handle;
@@ -449,6 +451,7 @@ impl AssetServer {
                     path.label().is_none().then(|| loader.asset_type_id()),
                     HandleLoadingMode::Request,
                     meta_transform,
+                    self.data.loaders.read().get_by_type(loader.asset_type_id()),
                 );
                 unwrap_with_context(result, loader.asset_type_name())
             }
@@ -486,6 +489,7 @@ impl AssetServer {
                 loader.asset_type_name(),
                 HandleLoadingMode::Force,
                 None,
+                self.data.loaders.read().get_by_type(loader.asset_type_id()),
             );
             (base_handle, base_path)
         } else {
@@ -609,6 +613,7 @@ impl AssetServer {
                 loaded_asset.asset_type_name(),
                 HandleLoadingMode::NotLoading,
                 None,
+                self.data.loaders.read().get_by_type(loaded_asset.asset_type_id()),
             );
             handle
         } else {
@@ -643,6 +648,7 @@ impl AssetServer {
                 path.clone(),
                 HandleLoadingMode::Request,
                 None,
+                self.data.loaders.read().get_by_type(TypeId::of::<LoadedFolder>()),
             );
         if !should_load {
             return handle;
@@ -899,6 +905,7 @@ impl AssetServer {
                 path.into().into_owned(),
                 HandleLoadingMode::NotLoading,
                 meta_transform,
+                self.data.loaders.read().get_by_type(TypeId::of::<A>()),
             )
             .0
     }
